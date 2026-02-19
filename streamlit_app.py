@@ -1,125 +1,234 @@
-import streamlit as st
+from flask import Flask, request, redirect, url_for, render_template_string, session
 import random
-import pandas as pd
+import uuid
 
-# --- DATABASE INITIALIZATION ---
-def init_teams():
-    return [
-        # TIER 1: UPS
-        {"name": "Havenport Raptors", "tier": 1, "att": 88, "def": 87, "reputation": 95, "budget": 100},
-        {"name": "Oakridge Bears", "tier": 1, "att": 85, "def": 90, "reputation": 90, "budget": 80},
-        {"name": "Emerald Bay Vipers", "tier": 1, "att": 90, "def": 85, "reputation": 92, "budget": 90},
-        {"name": "Silverwood Wolves", "tier": 1, "att": 89, "def": 89, "reputation": 94, "budget": 95},
-        {"name": "Stonebridge Sharks", "tier": 1, "att": 91, "def": 88, "reputation": 93, "budget": 100},
-        {"name": "Shadowridge Panthers", "tier": 1, "att": 83, "def": 84, "reputation": 80, "budget": 50},
-        {"name": "Emberwood Scorpions", "tier": 1, "att": 82, "def": 82, "reputation": 78, "budget": 45},
-        {"name": "Goldshore Dragons", "tier": 1, "att": 84, "def": 83, "reputation": 82, "budget": 55},
-        {"name": "Havencity Bulls", "tier": 1, "att": 81, "def": 84, "reputation": 75, "budget": 40},
-        {"name": "Cresthill Falcons", "tier": 1, "att": 87, "def": 86, "reputation": 88, "budget": 70},
-        {"name": "Silverwood Tigers", "tier": 1, "att": 84, "def": 82, "reputation": 81, "budget": 60},
-        {"name": "Oakridge Owls", "tier": 1, "att": 80, "def": 81, "reputation": 72, "budget": 35},
-        # TIER 2: UChL
-        {"name": "Ironcliff Titans", "tier": 2, "att": 78, "def": 79, "reputation": 70, "budget": 30},
-        {"name": "Stonebrook Foxes", "tier": 2, "att": 77, "def": 77, "reputation": 68, "budget": 28},
-        {"name": "ValesTown Leopards", "tier": 2, "att": 75, "def": 74, "reputation": 65, "budget": 25},
-        {"name": "Stonebridge Ravens", "tier": 2, "att": 73, "def": 76, "reputation": 63, "budget": 22},
-        {"name": "Cliffside Workers", "tier": 2, "att": 71, "def": 72, "reputation": 60, "budget": 18},
-        {"name": "Barreswell Knights", "tier": 2, "att": 72, "def": 73, "reputation": 61, "budget": 19},
-        {"name": "Silverwood Hawks", "tier": 2, "att": 74, "def": 74, "reputation": 64, "budget": 24},
-        {"name": "Silverpine Cougars", "tier": 2, "att": 73, "def": 73, "reputation": 62, "budget": 20},
-        # TIER 3: UNL
-        {"name": "Greenpool Hornets", "tier": 3, "att": 68, "def": 69, "reputation": 55, "budget": 12},
-        {"name": "Red Gulf Lions", "tier": 3, "att": 67, "def": 67, "reputation": 53, "budget": 10},
-        {"name": "Meadowview United", "tier": 3, "att": 69, "def": 68, "reputation": 54, "budget": 11},
-        {"name": "Newhaven Mariners", "tier": 3, "att": 66, "def": 65, "reputation": 50, "budget": 8},
-        {"name": "Deportivo Puente Nuevo", "tier": 3, "att": 65, "def": 66, "reputation": 49, "budget": 7},
-        {"name": "Atletico Puerto Antiguo", "tier": 3, "att": 64, "def": 64, "reputation": 48, "budget": 6},
-        {"name": "Emerald City SC", "tier": 3, "att": 63, "def": 63, "reputation": 45, "budget": 5},
-        {"name": "Phoenix FC", "tier": 3, "att": 62, "def": 62, "reputation": 44, "budget": 5},
-    ]
+app = Flask(__name__)
+app.secret_key = "unionia_secret_key"
 
-# --- GAME ENGINE ---
-def play_match(home, away, is_neutral=False):
-    h_adv = 1.1 if not is_neutral else 1.0
-    h_prob = (home['att'] * h_adv) / (away['def'] * 1.1)
-    a_prob = (away['att']) / (home['def'] * 1.1 * h_adv)
+# --- GAME CONSTANTS ---
+TACTICS = {
+    "Gegenpress": {"power": 1.1, "fitness_drain": 15, "description": "High risk, high reward. Boosts attack but kills fitness."},
+    "Catenaccio": {"power": 0.9, "fitness_drain": 5, "description": "Solid defense. Low fitness drain, harder to score against."},
+    "Tiki-Taka": {"power": 1.0, "fitness_drain": 8, "description": "Balanced possession. Stable performance."}
+}
+
+# --- CLUB DATA (Historical 28) ---
+CLUBS_RAW = [
+    ("Havenport Raptors", 1887, 86, 12, 33, 6), ("Oakridge Bears", 1890, 83, 6, 15, 1),
+    ("Emerald Bay Vipers", 1893, 86, 14, 12, 3), ("Silverwood Wolves", 1895, 85, 16, 21, 4),
+    ("Stonebridge Sharks", 1897, 87, 16, 11, 3), ("Shadowridge Panthers", 1899, 74, 0, 1, 0),
+    ("Emberwood Scorpions", 1908, 72, 0, 1, 0), ("Goldshore Dragons", 1914, 75, 0, 3, 0),
+    ("Havencity Bulls", 1918, 71, 0, 2, 0), ("Cresthill Falcons", 1920, 82, 3, 8, 2),
+    ("Silverwood Tigers", 1921, 78, 2, 4, 0), ("Oakridge Owls", 1930, 76, 0, 2, 0),
+    ("Ironcliff Titans", 1935, 80, 1, 5, 0), ("Stonebrook Foxes", 1940, 77, 1, 4, 0),
+    ("ValesTown Leopards", 1948, 75, 0, 0, 0), ("Stonebridge Ravens", 1955, 74, 0, 1, 0),
+    ("Cliffside Workers", 1955, 70, 0, 0, 0), ("Barreswell Knights", 1955, 70, 0, 0, 0),
+    ("Silverwood Hawks", 1955, 73, 0, 2, 0), ("Silverpine Cougars", 1955, 71, 0, 1, 0),
+    ("Greenpool Hornets", 1958, 72, 0, 0, 0), ("Red Gulf Lions", 1962, 72, 0, 0, 0),
+    ("Meadowview United", 1965, 71, 0, 0, 0), ("Newhaven Mariners", 1969, 70, 0, 0, 0),
+    ("Deportivo Puente Nuevo", 1972, 70, 0, 0, 0), ("Atletico Puerto Antiguo", 1979, 70, 0, 0, 0),
+    ("Emerald City SC", 2006, 70, 0, 0, 0), ("Phoenix FC", 2006, 70, 0, 0, 0)
+]
+
+class GameState:
+    def __init__(self):
+        self.year = 2026
+        self.clubs = []
+        for name, year, rating, l_wins, c_wins, p_wins in CLUBS_RAW:
+            self.clubs.append({
+                "name": name, "founded": year, "rating": rating,
+                "league_titles": l_wins, "cup_titles": c_wins, "pc_titles": p_wins,
+                "points": 0, "gf": 0, "ga": 0, "played": 0,
+                "budget": 1000000, "fans": 75, "board": 80, "prestige": rating // 2
+            })
+        
+        # Initial Tiers
+        self.ups = self.clubs[0:12]
+        self.uchl = self.clubs[12:20]
+        self.unl = self.clubs[20:28]
+        self.player_club = None
+        self.tactic = "Tiki-Taka"
+        self.week = 1
+        self.logs = ["Welcome to the Unionia Pro28 System."]
+
+    def get_club(self, name):
+        return next((c for c in self.clubs if c['name'] == name), None)
+
+# Global storage (in-memory for demo, resets on restart)
+games = {}
+
+def get_game():
+    if 'user_id' not in session:
+        session['user_id'] = str(uuid.uuid4())
+    uid = session['user_id']
+    if uid not in games:
+        games[uid] = GameState()
+    return games[uid]
+
+# --- MATCH ENGINE ---
+def run_match(home, away, game, neutral=False):
+    tactic_mod = TACTICS[game.tactic] if home['name'] == game.player_club else {"power": 1.0, "fitness_drain": 8}
     
-    h_goals = sum(1 for _ in range(6) if random.random() < (h_prob / 4))
-    a_goals = sum(1 for _ in range(6) if random.random() < (a_prob / 4))
-    return h_goals, a_goals
-
-# --- UI & STATE ---
-st.set_page_config(page_title="Unionia Manager Pro28", layout="wide")
-st.title("⚽ Unionia Pro28 Manager Engine")
-
-if 'game_state' not in st.session_state:
-    st.session_state.game_state = "setup"
-    st.session_state.year = 2026
-    st.session_state.teams = init_teams()
-    st.session_state.job_satisfaction = 100
-    st.session_state.history = []
-
-if st.session_state.game_state == "setup":
-    st.subheader("Choose Your Club")
-    team_names = [t['name'] for t in st.session_state.teams]
-    selected = st.selectbox("Select a team to manage:", team_names)
-    if st.button("Start Career"):
-        st.session_state.my_team = selected
-        st.session_state.game_state = "playing"
-        st.rerun()
-
-elif st.session_state.game_state == "playing":
-    my_team_data = next(t for t in st.session_state.teams if t['name'] == st.session_state.my_team)
+    h_pwr = (home['rating'] * tactic_mod['power']) + (0 if neutral else 3)
+    a_pwr = away['rating']
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Club", my_team_data['name'])
-    col2.metric("Tier", my_team_data['tier'])
-    col3.metric("Board Trust", f"{st.session_state.job_satisfaction}%")
+    h_score = max(0, int(random.gauss(h_pwr/25, 1)))
+    a_score = max(0, int(random.gauss(a_pwr/25, 1)))
 
-    if st.button("Simulate Season"):
-        # Reset standings
-        standings = {t['name']: {"pts": 0, "gf": 0, "ga": 0, "tier": t['tier']} for t in st.session_state.teams}
-        
-        # 1. UPS Logic (12 teams, Double RR)
-        ups_teams = [t for t in st.session_state.teams if t['tier'] == 1]
-        for _ in range(2):
-            for i, home in enumerate(ups_teams):
-                for j, away in enumerate(ups_teams):
-                    if i != j:
-                        gh, ga = play_match(home, away)
-                        standings[home['name']]['gf'] += gh
-                        standings[home['name']]['ga'] += ga
-                        standings[away['name']]['gf'] += ga
-                        standings[away['name']]['ga'] += gh
-                        if gh > ga: standings[home['name']]['pts'] += 3
-                        elif ga > gh: standings[away['name']]['pts'] += 3
-                        else:
-                            standings[home['name']]['pts'] += 1
-                            standings[away['name']]['pts'] += 1
+    home['gf'] += h_score; home['ga'] += a_score; home['played'] += 1
+    away['gf'] += a_score; away['ga'] += h_score; away['played'] += 1
 
-        # 2. Relegation/Promotion Logic
-        ups_sorted = sorted([{"name": k, **v} for k,v in standings.items() if v['tier'] == 1], key=lambda x: x['pts'], reverse=True)
-        
-        # Board Check
-        my_rank = next(i for i, t in enumerate(ups_sorted) if t['name'] == st.session_state.my_team) + 1
-        if my_rank > 10:
-            st.session_state.job_satisfaction -= 40
-        else:
-            st.session_state.job_satisfaction = min(100, st.session_state.job_satisfaction + 10)
-            
-        if st.session_state.job_satisfaction <= 0:
-            st.error("❌ YOU HAVE BEEN SACKED!")
-            if st.button("Restart"):
-                st.session_state.game_state = "setup"
-                st.rerun()
-        
-        st.session_state.last_results = ups_sorted
-        st.session_state.year += 1
-        st.success(f"Season {st.session_state.year-1} Finished!")
+    if h_score > a_score:
+        home['points'] += 3
+        if home['name'] == game.player_club: game.logs.append(f"VICTORY! {home['name']} {h_score}-{a_score} {away['name']}")
+    elif a_score > h_score:
+        away['points'] += 3
+        if home['name'] == game.player_club: game.logs.append(f"DEFEAT! {home['name']} {h_score}-{a_score} {away['name']}")
+    else:
+        home['points'] += 1; away['points'] += 1
+        if home['name'] == game.player_club: game.logs.append(f"DRAW. {home['name']} {h_score}-{a_score} {away['name']}")
+    
+    # Financials (Attendance)
+    revenue = (home['prestige'] * 1000) + (h_score * 500)
+    home['budget'] += revenue
 
-    if 'last_results' in st.session_state:
-        st.table(pd.DataFrame(st.session_state.last_results))
+# --- TEMPLATES ---
+BASE_HTML = """
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
+    <title>Unionia Manager Pro</title>
+</head>
+<body class="container">
+    <nav>
+        <ul><li><strong>Unionia Pro28</strong></li></ul>
+        <ul>
+            <li><a href="/">Dashboard</a></li>
+            <li><a href="/table">Tables</a></li>
+            <li><a href="/history">History</a></li>
+        </ul>
+    </nav>
+    {% block content %}{% endblock %}
+    <footer style="margin-top: 2rem; font-size: 0.8rem; text-align: center;">
+        Republic of Unionia Football System &copy; {{ year }}
+    </footer>
+</body>
+</html>
+"""
 
-    if st.button("Quit Job"):
-        st.session_state.game_state = "setup"
-        st.rerun()
+@app.route("/")
+def index():
+    game = get_game()
+    if not game.player_club:
+        return render_template_string(BASE_HTML + """
+        {% block content %}
+        <h1>Select Your Club</h1>
+        <div class="grid">
+        {% for club in clubs %}
+            <form action="/select" method="post">
+                <input type="hidden" name="name" value="{{club.name}}">
+                <button type="submit" class="secondary">{{club.name}} (R{{club.rating}})</button>
+            </form>
+        {% endfor %}
+        </div>
+        {% endblock %}
+        """, clubs=game.clubs, year=game.year)
+
+    me = game.get_club(game.player_club)
+    return render_template_string(BASE_HTML + """
+    {% block content %}
+    <div class="grid">
+        <article>
+            <h5>{{ me.name }}</h5>
+            <p>💰 Budget: ${{ "{:,}".format(me.budget) }}<br>
+            📈 Rating: {{ me.rating }} | 🏟️ Week: {{ week }}</p>
+            <progress value="{{ me.board }}" max="100"></progress>
+            <small>Board Trust: {{ me.board }}%</small>
+        </article>
+        <article>
+            <h5>Tactics</h5>
+            <form action="/set_tactic" method="post">
+                <select name="tactic" onchange="this.form.submit()">
+                    {% for t in tactics %}<option value="{{t}}" {% if t == current_t %}selected{% endif %}>{{t}}</option>{% endfor %}
+                </select>
+            </form>
+            <small>{{ tactics[current_t].description }}</small>
+        </article>
+    </div>
+    <form action="/play" method="post"><button class="contrast">Play Next Gameweek</button></form>
+    <article style="height: 200px; overflow-y: scroll;">
+        <h6>Match Reports</h6>
+        <ul>{% for log in logs[::-1] %}<li>{{ log }}</li>{% endfor %}</ul>
+    </article>
+    {% endblock %}
+    """, me=me, week=game.week, tactics=TACTICS, current_t=game.tactic, logs=game.logs, year=game.year)
+
+@app.route("/select", methods=["POST"])
+def select():
+    game = get_game()
+    game.player_club = request.form.get("name")
+    game.logs.append(f"You have been appointed manager of {game.player_club}.")
+    return redirect("/")
+
+@app.route("/set_tactic", methods=["POST"])
+def set_tactic():
+    game = get_game()
+    game.tactic = request.form.get("tactic")
+    return redirect("/")
+
+@app.route("/play", methods=["POST"])
+def play_week():
+    game = get_game()
+    # Simplified week logic: simulate all tiers
+    for tier in [game.ups, game.uchl, game.unl]:
+        random.shuffle(tier)
+        for i in range(0, len(tier), 2):
+            run_match(tier[i], tier[i+1], game)
+    
+    game.week += 1
+    # Adjust Board Trust based on points/played
+    me = game.get_club(game.player_club)
+    target = 1.2 # points per game expected
+    actual = me['points'] / me['played']
+    me['board'] = max(0, min(100, me['board'] + int((actual - target) * 10)))
+    
+    if me['board'] <= 0:
+        game.logs.append("YOU HAVE BEEN FIRED!")
+        # Reset game for this user
+        games.pop(session['user_id'])
+    
+    return redirect("/")
+
+@app.route("/table")
+def table():
+    game = get_game()
+    def sort_t(t): return sorted(t, key=lambda x: (x['points'], x['gf']-x['ga']), reverse=True)
+    return render_template_string(BASE_HTML + """
+    {% block content %}
+    <h3>Unity Premiership (UPS)</h3>
+    <table>
+        <thead><tr><th>Club</th><th>P</th><th>Pts</th><th>GD</th></tr></thead>
+        {% for c in ups %}<tr><td>{{c.name}}</td><td>{{c.played}}</td><td>{{c.points}}</td><td>{{c.gf-c.ga}}</td></tr>{% endfor %}
+    </table>
+    {% endblock %}
+    """, ups=sort_t(game.ups), year=game.year)
+
+@app.route("/history")
+def history():
+    game = get_game()
+    return render_template_string(BASE_HTML + """
+    {% block content %}
+    <h3>Historical Records</h3>
+    <table>
+        <thead><tr><th>Club</th><th>League</th><th>Unity Cup</th><th>Prem Cup</th></tr></thead>
+        {% for c in clubs %}
+        <tr><td>{{c.name}}</td><td>{{c.league_titles}}</td><td>{{c.cup_titles}}</td><td>{{c.pc_titles}}</td></tr>
+        {% endfor %}
+    </table>
+    {% endblock %}
+    """, clubs=game.clubs, year=game.year)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
